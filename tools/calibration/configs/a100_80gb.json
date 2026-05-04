@@ -1,0 +1,8 @@
+{
+  "sku": "A100-SXM4-80GB",
+  "peak_tflops": 312.0,
+  "peak_hbm_gbs": 2039.0,
+  "hbm_gb": 80,
+  "tdp_w": 400.0,
+  "idle_w": 50.0
+}

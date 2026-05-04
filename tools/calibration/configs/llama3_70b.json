@@ -1,0 +1,9 @@
+{
+  "name": "llama-3-70b",
+  "parameters": 70600000000,
+  "layers": 80,
+  "h_q": 64,
+  "h_kv": 8,
+  "d_h": 128,
+  "bytes": 2
+}

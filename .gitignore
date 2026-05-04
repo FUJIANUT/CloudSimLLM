@@ -36,3 +36,26 @@ Test.java
 deploy.sh
 checkstyle.sh
 node_modules/
+
+# CloudSimLLM paper / LaTeX artefacts (not part of the code release)
+paper/
+texput.log
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.aux
+*.bbl
+*.blg
+*.out
+
+# Generated figures and tables (regenerate via tools/analysis/case_study_*_cli.py)
+tools/analysis/figures/
+tools/experiments/results/test.csv
+
+# Calibration run outputs (regenerate via tools/calibration/run_full_calibration.py)
+tools/calibration/_calibration_run/
+tools/calibration/_dry_run/
+
+# Python caches
+__pycache__/
+*.pyc

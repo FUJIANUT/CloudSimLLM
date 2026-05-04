@@ -1,0 +1,8 @@
+{
+  "sku": "H100-SXM5-80GB",
+  "peak_tflops": 989.0,
+  "peak_hbm_gbs": 3350.0,
+  "hbm_gb": 80,
+  "tdp_w": 700.0,
+  "idle_w": 75.0
+}

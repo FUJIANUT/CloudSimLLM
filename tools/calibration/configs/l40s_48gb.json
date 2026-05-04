@@ -1,0 +1,8 @@
+{
+  "sku": "L40S-48GB",
+  "peak_tflops": 362.0,
+  "peak_hbm_gbs": 864.0,
+  "hbm_gb": 48,
+  "tdp_w": 350.0,
+  "idle_w": 40.0
+}

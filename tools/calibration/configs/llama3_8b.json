@@ -1,0 +1,9 @@
+{
+  "name": "llama-3-8b",
+  "parameters": 8030000000,
+  "layers": 32,
+  "h_q": 32,
+  "h_kv": 8,
+  "d_h": 128,
+  "bytes": 2
+}
