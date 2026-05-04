@@ -142,6 +142,25 @@ def summary_table(df: pd.DataFrame, outdir: Path) -> pd.DataFrame:
     return summary
 
 
+METRIC_COLS = ["n_finished", "mean_ttft_s", "p99_ttft_s", "mean_tpot_s",
+               "p99_tpot_s", "mean_e2e_s", "slo_attainment",
+               "active_vm_hours", "idle_vm_hours", "cost_usd",
+               "total_energy_kwh", "wall_ms", "cold_start_violations"]
+
+
+def aggregate_seeds(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
+    metrics = [c for c in METRIC_COLS if c in df.columns]
+    g = df.groupby(group_cols, dropna=False)
+    agg = g[metrics].agg(["mean", "std"]).reset_index()
+    new_cols = []
+    for col in agg.columns:
+        metric, stat = col if isinstance(col, tuple) else (col, "")
+        new_cols.append(metric if stat in ("", "mean") else f"{metric}_{stat}")
+    agg.columns = new_cols
+    agg["n_seeds"] = g.size().reset_index(drop=True)
+    return agg
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", required=True)
@@ -156,8 +175,9 @@ def main():
     })
 
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
-    df = pd.read_csv(args.results)
-    print(f"[load] {len(df)} cells")
+    df_raw = pd.read_csv(args.results)
+    df = aggregate_seeds(df_raw, ["policy", "burst", "startup_sec"])
+    print(f"[load] {len(df)} cells (aggregated from {len(df_raw)} raw rows × {df.n_seeds.iloc[0]} seeds)")
 
     fig15_cost_slo_pareto(df, outdir);   print(f"[fig15] {outdir/'fig15_cost_slo_pareto.pdf'}")
     fig16_savings_vs_startup(df, outdir); print(f"[fig16] {outdir/'fig16_savings_vs_startup.pdf'}")

@@ -27,9 +27,27 @@ POLICY_COLORS = {
 }
 
 
+METRIC_COLS = ["n_finished", "mean_ttft_s", "p99_ttft_s", "mean_tpot_s",
+               "p99_tpot_s", "mean_e2e_s", "slo_attainment", "lambda",
+               "total_energy_kwh", "total_carbon_kg", "wall_ms"]
+
+
+def aggregate_seeds(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
+    metrics = [c for c in METRIC_COLS if c in df.columns]
+    g = df.groupby(group_cols, dropna=False)
+    agg = g[metrics].agg(["mean", "std"]).reset_index()
+    new_cols = []
+    for col in agg.columns:
+        metric, stat = col if isinstance(col, tuple) else (col, "")
+        new_cols.append(metric if stat in ("", "mean") else f"{metric}_{stat}")
+    agg.columns = new_cols
+    agg["n_seeds"] = g.size().reset_index(drop=True)
+    return agg
+
+
 def load(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
-    return df
+    return aggregate_seeds(df, ["policy", "workload", "hour"])
 
 
 def fig12_carbon_vs_hour(df: pd.DataFrame, outdir: Path) -> None:

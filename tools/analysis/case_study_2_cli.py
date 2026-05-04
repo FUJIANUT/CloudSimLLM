@@ -50,11 +50,30 @@ def cost_per_million_tokens(row) -> float:
     return cost_per_token * 1e6
 
 
+METRIC_COLS = ["n_finished", "mean_ttft_s", "p99_ttft_s", "mean_tpot_s",
+               "p99_tpot_s", "mean_e2e_s", "slo_attainment",
+               "total_energy_kwh", "total_carbon_kg", "wall_ms",
+               "cost_per_hour", "cost_per_M_token"]
+
+
+def aggregate_seeds(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
+    metrics = [c for c in METRIC_COLS if c in df.columns]
+    g = df.groupby(group_cols, dropna=False)
+    agg = g[metrics].agg(["mean", "std"]).reset_index()
+    new_cols = []
+    for col in agg.columns:
+        metric, stat = col if isinstance(col, tuple) else (col, "")
+        new_cols.append(metric if stat in ("", "mean") else f"{metric}_{stat}")
+    agg.columns = new_cols
+    agg["n_seeds"] = g.size().reset_index(drop=True)
+    return agg
+
+
 def load(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
     df["cost_per_hour"] = df.mix.apply(cost_per_hour)
     df["cost_per_M_token"] = df.apply(cost_per_million_tokens, axis=1)
-    return df
+    return aggregate_seeds(df, ["mix", "policy", "workload"])
 
 
 def fig9_ttft_vs_cost(df: pd.DataFrame, outdir: Path) -> None:
@@ -109,11 +128,16 @@ def fig11_mix_robustness(df: pd.DataFrame, outdir: Path) -> None:
         vals = [sub[(sub.mix == m) & (sub.workload == w)].p99_ttft_s.iloc[0]
                 if not sub[(sub.mix == m) & (sub.workload == w)].empty else 0.0
                 for m in mixes]
+        errs = [sub[(sub.mix == m) & (sub.workload == w)].p99_ttft_s_std.iloc[0]
+                if not sub[(sub.mix == m) & (sub.workload == w)].empty else 0.0
+                for m in mixes]
         ax.bar(x + i*width - width, vals, width=width, label=w,
-               color=COLORS[w], edgecolor="k", linewidth=0.4)
+               yerr=errs, capsize=2, color=COLORS[w],
+               edgecolor="k", linewidth=0.4,
+               error_kw=dict(ecolor='black', lw=0.6))
     ax.set_xticks(x)
     ax.set_xticklabels(mixes, rotation=18, ha="right", fontsize=8)
-    ax.set_ylabel("P99 TTFT (s)")
+    ax.set_ylabel("P99 TTFT (s)  [mean $\\pm$ std, 5 seeds]")
     ax.set_yscale("log")
     ax.grid(axis="y", alpha=0.3, which="both")
     ax.legend(frameon=False)
