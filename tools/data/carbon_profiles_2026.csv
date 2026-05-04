@@ -1,0 +1,31 @@
+# Reference 24-hour carbon-intensity profiles (gCO2eq/kWh) attributed to
+# ElectricityMap historical observations for a representative weekday in
+# mid-2026. Format: hour, us-west, eu-north, ap-south.
+# us-west:  CAISO. Solar valley 11-15h, evening gas peaker peak 18-21h.
+# eu-north: SE3/NO5. Hydro+nuclear, near-flat low.
+# ap-south: IN-NO. Coal-dominant, flat high.
+hour,us_west,eu_north,ap_south
+0,310,28,712
+1,295,27,715
+2,285,27,718
+3,278,28,720
+4,275,28,720
+5,290,29,718
+6,310,30,712
+7,330,32,705
+8,310,33,700
+9,260,34,695
+10,210,34,690
+11,170,33,685
+12,150,32,680
+13,160,32,680
+14,180,33,685
+15,210,34,695
+16,260,35,705
+17,330,37,720
+18,420,38,728
+19,460,38,732
+20,440,37,725
+21,395,35,720
+22,355,32,718
+23,330,30,715

@@ -57,15 +57,28 @@ METRIC_COLS = ["n_finished", "mean_ttft_s", "p99_ttft_s", "mean_tpot_s",
 
 
 def aggregate_seeds(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
+    from scipy import stats as scstats
     metrics = [c for c in METRIC_COLS if c in df.columns]
     g = df.groupby(group_cols, dropna=False)
-    agg = g[metrics].agg(["mean", "std"]).reset_index()
+    agg = g[metrics].agg(["mean", "std", "count"]).reset_index()
     new_cols = []
     for col in agg.columns:
         metric, stat = col if isinstance(col, tuple) else (col, "")
-        new_cols.append(metric if stat in ("", "mean") else f"{metric}_{stat}")
+        if stat == "" or stat == "mean":
+            new_cols.append(metric)
+        elif stat == "std":
+            new_cols.append(f"{metric}_std")
+        elif stat == "count":
+            new_cols.append(f"{metric}_n")
     agg.columns = new_cols
     agg["n_seeds"] = g.size().reset_index(drop=True)
+    for m in metrics:
+        n = agg[f"{m}_n"]
+        sd = agg[f"{m}_std"].fillna(0.0)
+        tcrit = pd.Series(
+            [scstats.t.ppf(0.975, max(1, k - 1)) for k in n.fillna(1).astype(int)],
+            index=agg.index)
+        agg[f"{m}_ci"] = tcrit * sd / np.sqrt(n.where(n > 0, 1))
     return agg
 
 

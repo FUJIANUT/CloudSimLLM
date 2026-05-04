@@ -65,11 +65,17 @@ class Pair:
 
 
 PAIRS = [
+    # f_eff_dec_tflops is the *memory-bandwidth-saturated* effective decode
+    # throughput (the architecturally correct figure), NOT the GPU's vendor
+    # compute peak. For the memory-bound batch sizes typical of LLM serving
+    # this is the value the simulator's max(.,.) Eq.2 selects; the compute
+    # peak (312/989/362 TFLOPS for A100/H100/L40S) only matters in tiny-KV
+    # large-batch regimes that none of our case studies exercise.
     Pair(name="A100-80GB / Llama-3-8B fp16",
          model_cfg="configs/llama3_8b.json",
          hw_cfg="configs/a100_80gb.json",
          p_m=8.03e9, layers=32, h_kv=8, d_h=128, bytes_=2,
-         f_eff_pre_tflops=180.0, f_eff_dec_tflops=60.0,
+         f_eff_pre_tflops=180.0, f_eff_dec_tflops=12.0,
          b_mem_eff_gbs=1500.0,
          alpha_pre=0.005, alpha_dec=0.001, rho_dec=0.70,
          p_idle_w=50.0, p_tdp_w=400.0,
@@ -78,7 +84,7 @@ PAIRS = [
          model_cfg="configs/llama3_70b.json",
          hw_cfg="configs/h100_80gb.json",
          p_m=70.6e9, layers=80, h_kv=8, d_h=128, bytes_=2,
-         f_eff_pre_tflops=450.0, f_eff_dec_tflops=150.0,
+         f_eff_pre_tflops=450.0, f_eff_dec_tflops=22.0,
          b_mem_eff_gbs=2500.0,
          alpha_pre=0.004, alpha_dec=0.0008, rho_dec=0.68,
          p_idle_w=75.0, p_tdp_w=700.0,
@@ -87,7 +93,7 @@ PAIRS = [
          model_cfg="configs/llama3_8b.json",
          hw_cfg="configs/l40s_48gb.json",
          p_m=8.03e9, layers=32, h_kv=8, d_h=128, bytes_=2,
-         f_eff_pre_tflops=220.0, f_eff_dec_tflops=45.0,
+         f_eff_pre_tflops=220.0, f_eff_dec_tflops=5.0,
          b_mem_eff_gbs=650.0,
          alpha_pre=0.006, alpha_dec=0.0015, rho_dec=0.72,
          p_idle_w=40.0, p_tdp_w=350.0,
@@ -102,7 +108,23 @@ GRID_OUTPUT = [128, 512]
 GRID_CONCUR = [1, 8, 32, 64]
 
 
-def synthesise_measurements(p: Pair, seed: int = 42) -> tuple[list[dict], pd.DataFrame]:
+def is_holdout_cell(input_len: int, concurrency: int) -> bool:
+    """Return True if this (input, batch) point is held-out from fitting.
+
+    Held-out OOD cells: the cube corner with input=4096 OR batch=64.
+    The fitter sees only input <= 1024 AND batch <= 32; the held-out
+    points test the parametric extrapolation to longer prompts and
+    larger batches.
+    """
+    return input_len == 4096 or concurrency == 64
+
+
+def synthesise_measurements(p: Pair, seed: int = 42, only: str = "all") -> tuple[list[dict], pd.DataFrame]:
+    """Synthesise vLLM-style measurements for a (model, GPU) pair.
+
+    `only`: "all" (default), "calib" (drop held-out), or "holdout"
+    (only held-out). Used to drive the held-out OOD validation in §6.1.
+    """
     rng = np.random.default_rng(seed)
     rows = []
     mw = 2 * int(p.p_m) * p.bytes_
@@ -110,6 +132,9 @@ def synthesise_measurements(p: Pair, seed: int = 42) -> tuple[list[dict], pd.Dat
     for sIn in GRID_INPUT:
         for sOut in GRID_OUTPUT:
             for c in GRID_CONCUR:
+                ho = is_holdout_cell(sIn, c)
+                if only == "calib" and ho: continue
+                if only == "holdout" and not ho: continue
                 ttft_one = (2 * p.p_m * sIn) / (p.f_eff_pre_tflops * 1e12) + p.alpha_pre
                 ttft_p50 = ttft_one * (1 + (c - 1) * 0.6)
                 avg_len = sIn + sOut / 2.0
@@ -146,8 +171,9 @@ def synthesise_measurements(p: Pair, seed: int = 42) -> tuple[list[dict], pd.Dat
 
 
 def run_fit(pair_idx: int, work_dir: Path) -> dict:
+    """Fit on the calibration subset only (held-out cells excluded)."""
     p = PAIRS[pair_idx]
-    rows, df_power = synthesise_measurements(p)
+    rows, df_power = synthesise_measurements(p, only="calib")
 
     meas_path = work_dir / f"measurements_{pair_idx}.json"
     power_path = work_dir / f"power_{pair_idx}.csv"
@@ -165,6 +191,43 @@ def run_fit(pair_idx: int, work_dir: Path) -> dict:
         "--out",          str(cal_path),
     ], check=True, capture_output=True)
     return json.loads(cal_path.read_text())
+
+
+def predict_with_calibration(p: Pair, calib: dict, sIn: int, sOut: int, c: int) -> dict:
+    """Predict TTFT/TPOT/throughput at one operating point using
+    recovered (rather than ground-truth) parameters."""
+    f_pre = float(calib["f_eff_prefill_tflops"])
+    b_mem = float(calib["b_mem_eff_gbs"])
+    a_pre = float(calib.get("alpha_prefill_s", p.alpha_pre))
+    a_dec = float(calib.get("alpha_decode_s", p.alpha_dec))
+    mw = 2 * int(p.p_m) * p.bytes_
+    kv_per_tok = 2 * p.layers * p.h_kv * p.d_h * p.bytes_
+    ttft_one = (2 * p.p_m * sIn) / (f_pre * 1e12) + a_pre
+    ttft_p50 = ttft_one * (1 + (c - 1) * 0.6)
+    avg_len = sIn + sOut / 2.0
+    mkv = kv_per_tok * avg_len * c
+    tpot_p50 = (mw + mkv) / (b_mem * 1e9) + a_dec
+    throughput = c * sOut / (ttft_p50 + tpot_p50 * sOut)
+    return dict(ttft_p50=ttft_p50, tpot_p50=tpot_p50,
+                throughput_tok_per_s=throughput)
+
+
+def holdout_error(p: Pair, calib: dict) -> dict:
+    """Mean relative error of the calibrated model against held-out
+    OOD cells (input=4096 or batch=64) the fitter never saw."""
+    holdout, _ = synthesise_measurements(p, only="holdout")
+    errs_ttft, errs_tpot, errs_thru = [], [], []
+    for cell in holdout:
+        pred = predict_with_calibration(
+            p, calib, cell["input_len"], cell["output_len"], cell["concurrency"])
+        errs_ttft.append(abs(pred["ttft_p50"] - cell["ttft_p50"]) / max(1e-9, cell["ttft_p50"]))
+        errs_tpot.append(abs(pred["tpot_p50"] - cell["tpot_p50"]) / max(1e-9, cell["tpot_p50"]))
+        errs_thru.append(abs(pred["throughput_tok_per_s"] - cell["throughput_tok_per_s"])
+                         / max(1e-9, cell["throughput_tok_per_s"]))
+    return dict(ttft_holdout=float(np.mean(errs_ttft)),
+                tpot_holdout=float(np.mean(errs_tpot)),
+                thru_holdout=float(np.mean(errs_thru)),
+                n_holdout=len(holdout))
 
 
 # -------- Per-pair Q-Q validation plot --------
@@ -237,6 +300,7 @@ def main():
     for i, p in enumerate(PAIRS):
         print(f"\n===== {p.name} =====")
         recovered = run_fit(i, work_dir)
+        ho = holdout_error(p, recovered)
         rows.append({
             "pair":       p.name,
             "GT F_pre":   p.f_eff_pre_tflops,
@@ -252,12 +316,17 @@ def main():
         qq_pdf = ANALYSIS_FIG_DIR / f"fig_qq_pair{i}.pdf"
         err = qq_plot(i, work_dir, qq_pdf)
         err_rows.append({
-            "pair":       p.name.split(" / ")[0],
-            "TTFT_err":   100 * err["ttft_p50"],
-            "TPOT_err":   100 * err["tpot_p50"],
-            "thru_err":   100 * err["throughput_tok_per_s"],
+            "pair":         p.name.split(" / ")[0],
+            "TTFT_err":     100 * err["ttft_p50"],
+            "TPOT_err":     100 * err["tpot_p50"],
+            "thru_err":     100 * err["throughput_tok_per_s"],
+            "TTFT_HO_err":  100 * ho["ttft_holdout"],
+            "TPOT_HO_err":  100 * ho["tpot_holdout"],
+            "thru_HO_err":  100 * ho["thru_holdout"],
+            "n_holdout":    ho["n_holdout"],
         })
         print(f"  recovered: F_pre={recovered['f_eff_prefill_tflops']:.1f}  F_dec={recovered['f_eff_decode_tflops']:.1f}  rho={recovered['rho_decode']:.2f}")
+        print(f"  held-out OOD ({ho['n_holdout']} cells): TTFT={100*ho['ttft_holdout']:.1f}%  TPOT={100*ho['tpot_holdout']:.1f}%  thru={100*ho['thru_holdout']:.1f}%")
 
     # Calibration table.
     df_cal = pd.DataFrame(rows).set_index("pair")

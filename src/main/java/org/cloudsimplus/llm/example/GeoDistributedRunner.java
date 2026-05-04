@@ -65,11 +65,12 @@ public final class GeoDistributedRunner {
         double lambda    = Double.parseDouble(args.getOrDefault("lambda", "0.005"));
         String label     = args.getOrDefault("label", "default");
         Path output      = Path.of(args.getOrDefault("output", "geo_results.csv"));
+        String carbonCsv = args.get("carbon-csv");   // optional
 
         var policy = CarbonAwareBroker.Policy.valueOf(policyStr);
 
         long t0 = System.currentTimeMillis();
-        Result r = run(policy, hour, numRequests, workload, seed, lambda);
+        Result r = run(policy, hour, numRequests, workload, seed, lambda, carbonCsv);
         long wallMs = System.currentTimeMillis() - t0;
 
         appendCsvRow(output, label, policyStr, hour, numRequests, workload, seed, lambda, wallMs, r);
@@ -81,7 +82,8 @@ public final class GeoDistributedRunner {
     }
 
     private static Result run(CarbonAwareBroker.Policy policy, int hour, int n,
-                              String workload, long seed, double lambda) {
+                              String workload, long seed, double lambda,
+                              String carbonCsv) {
         var simulation = new CloudSimPlus(0.0001);
         var broker = new CarbonAwareBroker(simulation, seed)
             .setPolicy(policy)
@@ -89,6 +91,15 @@ public final class GeoDistributedRunner {
 
         var model = LlmModelSpec.llama3_8B_fp16();
         var regions = GeoRegion.threeRegionWorld();
+        // Optionally override the analytic carbon profile with a real
+        // ElectricityMap-derived 24h CSV (M6 reviewer fix).
+        if (carbonCsv != null && !carbonCsv.isEmpty()) {
+            try {
+                GeoRegion.loadHourlyProfilesFromCsv(regions, java.nio.file.Path.of(carbonCsv));
+            } catch (java.io.IOException e) {
+                throw new RuntimeException("failed to load carbon CSV: " + carbonCsv, e);
+            }
+        }
         // Inject the "hour-of-day" by shifting each region's carbon profile phase
         // rather than starting cloudlets at hour*3600 (which would race CloudSim's
         // event loop into a million-tick idle).

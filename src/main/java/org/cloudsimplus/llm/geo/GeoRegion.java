@@ -1,6 +1,13 @@
 package org.cloudsimplus.llm.geo;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -33,6 +40,13 @@ public final class GeoRegion {
     private final Map<String, Double> rttSecToPeer = new HashMap<>();
     /** Phase offset (hours) applied to the 24h carbon cycle. */
     private double phaseOffsetHours = 0.0;
+    /**
+     * If non-null, overrides the analytic profile with a real-data 24-element
+     * lookup of carbon intensity (gCO2eq/kWh) per hour. Loaded via
+     * {@link #setHourlyProfile(double[])} or
+     * {@link #loadHourlyProfilesFromCsv}.
+     */
+    private double[] hourlyOverride = null;
 
     public GeoRegion(String name, Profile profile, double pue) {
         this.name = name;
@@ -63,6 +77,12 @@ public final class GeoRegion {
      */
     public double carbonIntensityGramsPerKwh(double now) {
         final double h = ((now / 3600.0) + phaseOffsetHours) % 24.0;
+        if (hourlyOverride != null) {
+            int hi = (int) Math.floor(h) % 24;
+            int hi2 = (hi + 1) % 24;
+            double frac = h - Math.floor(h);
+            return (1 - frac) * hourlyOverride[hi] + frac * hourlyOverride[hi2];
+        }
         final double phase = 2 * Math.PI * h / 24.0;
         return switch (profile) {
             // Solar dip at noon (h=12), evening peak (h=18) from gas peakers.
@@ -97,6 +117,52 @@ public final class GeoRegion {
         var m = new HashMap<String, GeoRegion>();
         m.put(us.name, us); m.put(eu.name, eu); m.put(ap.name, ap);
         return m;
+    }
+
+    /**
+     * Override the analytic carbon profile with a 24-element hourly array
+     * (gCO2eq/kWh per hour, index 0..23). Linear interpolation between
+     * hours. Pass {@code null} to revert to the analytic profile.
+     */
+    public GeoRegion setHourlyProfile(double[] hourly) {
+        if (hourly != null && hourly.length != 24)
+            throw new IllegalArgumentException("hourly profile must have exactly 24 entries");
+        this.hourlyOverride = hourly == null ? null : hourly.clone();
+        return this;
+    }
+
+    /**
+     * Load hourly carbon profiles from a CSV (e.g.\ ElectricityMap export)
+     * with header "hour,&lt;col&gt;,..." and 24 data rows. Each named column
+     * is matched to the corresponding region in {@code regions} (by
+     * substring of the region's {@link #name()}). Unmatched columns are
+     * ignored; unmatched regions keep their analytic profile.
+     */
+    public static void loadHourlyProfilesFromCsv(Map<String, GeoRegion> regions, Path csv) throws IOException {
+        var lines = Files.readAllLines(csv).stream()
+            .map(String::trim)
+            .filter(s -> !s.isEmpty() && !s.startsWith("#"))
+            .toList();
+        if (lines.size() < 25)
+            throw new IOException("CSV must have header + 24 data rows; got " + lines.size());
+        String[] header = lines.get(0).split(",");
+        Map<String, double[]> cols = new HashMap<>();
+        for (int c = 1; c < header.length; c++) cols.put(header[c].trim(), new double[24]);
+        for (int h = 0; h < 24; h++) {
+            String[] tok = lines.get(h + 1).split(",");
+            for (int c = 1; c < header.length; c++) {
+                cols.get(header[c].trim())[h] = Double.parseDouble(tok[c].trim());
+            }
+        }
+        for (var entry : regions.entrySet()) {
+            String regName = entry.getKey().replace("-", "_");
+            for (var col : cols.entrySet()) {
+                if (regName.contains(col.getKey()) || col.getKey().contains(regName)) {
+                    entry.getValue().setHourlyProfile(col.getValue());
+                    break;
+                }
+            }
+        }
     }
 
     /** Build a 5-region world adding US-Mid (wind) and EU-Central. */

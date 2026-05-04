@@ -71,12 +71,16 @@ public final class AutoscalingRunner {
         long seed        = Long.parseLong(args.getOrDefault("seed", "42"));
         String label     = args.getOrDefault("label", "default");
         Path output      = Path.of(args.getOrDefault("output", "autoscale_results.csv"));
+        double baseRate  = Double.parseDouble(args.getOrDefault("base-rate", "8.0"));
+        // Override per-cloudlet TTFT SLO. Default tracks the medium-workload
+        // production guidance (5 s); reviewer M3 motivated this knob.
+        double ttftSlo   = Double.parseDouble(args.getOrDefault("ttft-slo", "5.0"));
 
         var policy = WarmPoolAutoscaler.Policy.valueOf(policyStr);
 
         long t0 = System.currentTimeMillis();
         Result r = run(policy, burstLevel, startupSec, maxPool, minPool, initialPool,
-                       numRequests, workload, seed);
+                       numRequests, workload, seed, baseRate, ttftSlo);
         long wallMs = System.currentTimeMillis() - t0;
 
         appendCsvRow(output, label, policyStr, burstLevel, startupSec, maxPool, minPool,
@@ -91,7 +95,8 @@ public final class AutoscalingRunner {
 
     private static Result run(WarmPoolAutoscaler.Policy policy, String burstLevel,
                                double startupSec, int maxPool, int minPool, int initialPool,
-                               int n, String workload, long seed) {
+                               int n, String workload, long seed, double baseRate,
+                               double ttftSlo) {
         var simulation = new CloudSimPlus(0.0001);
 
         var autoscaler = new WarmPoolAutoscaler(policy, initialPool, minPool, maxPool, 4.0)
@@ -125,7 +130,10 @@ public final class AutoscalingRunner {
         // Single submission; the LLM scheduler gates by arrivalSimTime so VMs
         // see realistic queue build-up. Each cloudlet's finish listener pings
         // the autoscaler so scaling reacts as load evolves over the run.
-        var trace = generateBurstyTrace(model, n, workload, seed, burstLevel);
+        var trace = generateBurstyTrace(model, n, workload, seed, burstLevel, baseRate);
+        // Apply the runner-supplied TTFT SLO to every cloudlet so the
+        // metric reflects the regime the operator declares (M3).
+        for (var c : trace) ((LlmCloudlet) c).setSloTtft(ttftSlo);
         // Group cloudlets by 5-second arrival buckets and submit each bucket
         // with a single submissionDelay. This gives the broker manageable
         // per-bucket events (vs. one per cloudlet) while still exposing the
@@ -179,7 +187,7 @@ public final class AutoscalingRunner {
      * lasts {@code burstSec} seconds and recurs every {@code periodSec}.
      */
     private static List<Cloudlet> generateBurstyTrace(LlmModelSpec model, int n, String workload,
-                                                      long seed, String burstLevel) {
+                                                      long seed, String burstLevel, double baseRate) {
         var rng = new Random(seed);
         int[] shape = switch (workload) {
             case "short"  -> new int[] { 128,  385,   64,  129 };
@@ -191,7 +199,6 @@ public final class AutoscalingRunner {
             case "high" -> 5.0;
             default     -> 3.0;       // med
         };
-        double baseRate  = 8.0;        // req/s base (matches ~half capacity of 4 VMs)
         double burstSec  = 20.0;       // duration of each burst
         double periodSec = 120.0;      // distance between bursts
 

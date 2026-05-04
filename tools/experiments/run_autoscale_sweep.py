@@ -43,6 +43,11 @@ def main():
     ap.add_argument("--max-pool", type=int, default=8)
     ap.add_argument("--min-pool", type=int, default=2)
     ap.add_argument("--initial-pool", type=int, default=4)
+    ap.add_argument("--base-rate", type=float, default=8.0,
+                    help="Base arrival rate (req/s) before burst multiplier.")
+    ap.add_argument("--ttft-slo", type=float, default=5.0,
+                    help="Per-cloudlet TTFT SLO threshold (s). Default 5.0 "
+                         "matches the medium-workload guidance.")
     ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--rm", action="store_true")
     args = ap.parse_args()
@@ -76,6 +81,8 @@ def main():
             f"--max-pool={cell['max_pool']}", f"--min-pool={cell['min_pool']}",
             f"--initial-pool={cell['initial_pool']}",
             f"--requests={cell['requests']}", f"--workload=medium",
+            f"--base-rate={args.base_rate}",
+            f"--ttft-slo={args.ttft_slo}",
             f"--seed={cell['seed']}", f"--label={cell['label']}",
             f"--output={output}",
         ]

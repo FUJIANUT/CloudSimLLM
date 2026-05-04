@@ -31,21 +31,31 @@ METRIC_COLS = ["n_finished", "mean_ttft_s", "p99_ttft_s", "mean_tpot_s",
 
 
 def aggregate_seeds(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
-    """Group by configuration columns and report mean+std across seeds."""
+    """Group by configuration columns; report mean, std, and 95% CI half-width."""
+    from scipy import stats as scstats
     metrics = [c for c in METRIC_COLS if c in df.columns]
     g = df.groupby(group_cols, dropna=False)
-    agg = g[metrics].agg(["mean", "std"]).reset_index()
-    # Flatten MultiIndex columns: ('p99_ttft_s', 'mean')->'p99_ttft_s';
-    # ('p99_ttft_s', 'std')->'p99_ttft_s_std'; group cols are ('name','').
+    agg = g[metrics].agg(["mean", "std", "count"]).reset_index()
     new_cols = []
     for col in agg.columns:
         metric, stat = col if isinstance(col, tuple) else (col, "")
         if stat == "" or stat == "mean":
             new_cols.append(metric)
-        else:
-            new_cols.append(f"{metric}_{stat}")
+        elif stat == "std":
+            new_cols.append(f"{metric}_std")
+        elif stat == "count":
+            new_cols.append(f"{metric}_n")
     agg.columns = new_cols
     agg["n_seeds"] = g.size().reset_index(drop=True)
+    # 95% CI half-width = t_{0.975, n-1} * std / sqrt(n)
+    for m in metrics:
+        n = agg[f"{m}_n"]
+        sd = agg[f"{m}_std"].fillna(0.0)
+        tcrit = pd.Series(
+            [scstats.t.ppf(0.975, max(1, k - 1)) for k in n.fillna(1).astype(int)],
+            index=agg.index,
+        )
+        agg[f"{m}_ci"] = tcrit * sd / np.sqrt(n.where(n > 0, 1))
     return agg
 
 
@@ -66,14 +76,15 @@ def fig6_ttft_vs_pd(df: pd.DataFrame, outdir: Path) -> None:
         sub = view[view.workload == w].sort_values("pd_share_prefill")
         if sub.empty: continue
         ax.errorbar(sub.pd_share_prefill, sub.p99_ttft_s,
-                    yerr=sub.p99_ttft_s_std, marker=MARKERS[w], color=COLORS[w],
+                    yerr=sub.p99_ttft_s_ci, marker=MARKERS[w], color=COLORS[w],
                     label=f"splitwise — {w}", linewidth=1.6, capsize=2.5)
         base = df[(df["mode"] == "colocated") & (df.workload == w)]
         if not base.empty:
             ax.axhline(base.p99_ttft_s.mean(), color=COLORS[w], linestyle=":",
                        alpha=0.6, label=f"colocated — {w}")
+    n = int(df.n_seeds.iloc[0]) if "n_seeds" in df else 20
     ax.set_xlabel("prefill GPU share  =  prefill / (prefill + decode)")
-    ax.set_ylabel("P99 TTFT (s)  [mean $\\pm$ std, 5 seeds]")
+    ax.set_ylabel(f"P99 TTFT (s)  [mean, 95% CI, {n} seeds]")
     ax.set_yscale("log")
     ax.grid(alpha=0.3, which="both")
     ax.legend(loc="upper right", ncols=2, frameon=False)
@@ -129,11 +140,12 @@ def fig8_kvbw_sensitivity(df: pd.DataFrame, outdir: Path) -> None:
         best_pd = ref.loc[ref.p99_ttft_s.idxmin(), "pd_ratio"]
         sub = sw[(sw.workload == w) & (sw.pd_ratio == best_pd)].sort_values("kv_bw_gbs")
         ax.bar(x + i*width - width, sub.p99_ttft_s.values, width=width,
-               yerr=sub.p99_ttft_s_std.values, capsize=2.5,
+               yerr=sub.p99_ttft_s_ci.values, capsize=2.5,
                color=COLORS[w], label=f"{w} (best={best_pd})",
                edgecolor="k", linewidth=0.4, error_kw=dict(ecolor='black', lw=0.6))
+    n = int(df.n_seeds.iloc[0]) if "n_seeds" in df else 20
     ax.set_xticks(x); ax.set_xticklabels([f"{int(v)} GB/s" for v in bws])
-    ax.set_ylabel("P99 TTFT (s)  [mean $\\pm$ std, 5 seeds]")
+    ax.set_ylabel(f"P99 TTFT (s)  [mean, 95% CI, {n} seeds]")
     ax.set_xlabel("Inter-host KV transfer bandwidth")
     ax.grid(axis="y", alpha=0.3)
     ax.legend(frameon=False)
@@ -150,17 +162,15 @@ def summary_table(df: pd.DataFrame, outdir: Path) -> pd.DataFrame:
         sw = df[(df.workload == w) & (df["mode"] == "splitwise") & (df.kv_bw_gbs == 200)]
         if co.empty or sw.empty: continue
         best = sw.loc[sw.p99_ttft_s.idxmin()]
-        co_p99 = co.p99_ttft_s.mean()
-        co_p99_std = co.p99_ttft_s.std() if len(co) > 1 else float("nan")
+        co_p99 = co.p99_ttft_s.iloc[0]
+        co_ci  = co.p99_ttft_s_ci.iloc[0]
         rows.append({
             "workload": w, "best_pd": best.pd_ratio,
-            "colo_p99_ttft": f"{co_p99:.2f}±{co_p99_std:.2f}" if not pd.isna(co_p99_std) else f"{co_p99:.2f}",
-            "sw_p99_ttft":   f"{best.p99_ttft_s:.2f}±{best.p99_ttft_s_std:.2f}",
-            "p99_ttft_speedup": f"{co_p99/best.p99_ttft_s:.2f}",
-            "colo_slo":      f"{100*co.slo_attainment.mean():.1f}",
-            "sw_slo":        f"{100*best.slo_attainment:.1f}±{100*best.slo_attainment_std:.1f}",
-            "colo_energy_kwh": f"{co.total_energy_kwh.mean():.3f}",
-            "sw_energy_kwh":   f"{best.total_energy_kwh:.3f}±{best.total_energy_kwh_std:.3f}",
+            "colo_p99_ttft": f"{co_p99:.2f} [±{co_ci:.2f}]",
+            "sw_p99_ttft":   f"{best.p99_ttft_s:.2f} [±{best.p99_ttft_s_ci:.2f}]",
+            "speedup": f"{co_p99/best.p99_ttft_s:.2f}",
+            "colo_slo": f"{100*co.slo_attainment.iloc[0]:.1f}",
+            "sw_slo":   f"{100*best.slo_attainment:.1f} [±{100*best.slo_attainment_ci:.1f}]",
         })
     summary = pd.DataFrame(rows).set_index("workload")
     summary.to_csv(outdir / "table_case_study_1.csv")

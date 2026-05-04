@@ -65,6 +65,10 @@ def main():
     ap.add_argument("--requests", type=int, default=500)
     ap.add_argument("--seeds", default="42")
     ap.add_argument("--lambda", dest="lambda_", default="0.005")
+    ap.add_argument("--carbon-csv", default="",
+                    help="Optional 24h carbon-intensity CSV "
+                         "(e.g. tools/data/carbon_profiles_2026.csv). "
+                         "If empty, the analytic profiles in GeoRegion are used.")
     ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--rm", action="store_true")
     args = ap.parse_args()
@@ -81,10 +85,13 @@ def main():
     print(f"[sweep] {len(cells)} cells × {args.jobs} jobs → {output}", flush=True)
 
     def to_args(cell):
-        return [f"--policy={cell['policy']}", f"--hour={cell['hour']}",
-                f"--requests={cell['requests']}", f"--workload={cell['workload']}",
-                f"--seed={cell['seed']}", f"--lambda={cell['lambda']}",
-                f"--label={cell['label']}", f"--output={output}"]
+        a = [f"--policy={cell['policy']}", f"--hour={cell['hour']}",
+             f"--requests={cell['requests']}", f"--workload={cell['workload']}",
+             f"--seed={cell['seed']}", f"--lambda={cell['lambda']}",
+             f"--label={cell['label']}", f"--output={output}"]
+        if args.carbon_csv:
+            a.append(f"--carbon-csv={Path(args.carbon_csv).resolve()}")
+        return a
 
     failed = 0; t0 = time.perf_counter()
     if args.jobs == 1:
