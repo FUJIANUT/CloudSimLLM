@@ -32,7 +32,7 @@ def get_classpath():
 def run_one(java_home, classpath, args):
     cmd = [str(Path(java_home) / "bin" / "java"), "-cp", classpath,
            "org.cloudsimplus.llm.example.AutoscalingRunner", *args]
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
 
 def main():
@@ -48,6 +48,10 @@ def main():
     ap.add_argument("--ttft-slo", type=float, default=5.0,
                     help="Per-cloudlet TTFT SLO threshold (s). Default 5.0 "
                          "matches the medium-workload guidance.")
+    ap.add_argument("--bursts", default=",".join(BURST_DEFAULT),
+                    help="Comma-separated burst levels (subset of low,med,high).")
+    ap.add_argument("--startups", default=",".join(str(s) for s in STARTUP_DEFAULT),
+                    help="Comma-separated cold-start delays in seconds.")
     ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--rm", action="store_true")
     args = ap.parse_args()
@@ -61,9 +65,11 @@ def main():
     seeds = [int(s) for s in args.seeds.split(",")]
 
     cells = []
+    bursts = [b.strip() for b in args.bursts.split(",") if b.strip()]
+    startups = [int(s) for s in args.startups.split(",") if s.strip()]
     for policy in POLICIES_DEFAULT:
-        for burst in BURST_DEFAULT:
-            for startup in STARTUP_DEFAULT:
+        for burst in bursts:
+            for startup in startups:
                 for seed in seeds:
                     cells.append({
                         "policy": policy, "burst": burst,

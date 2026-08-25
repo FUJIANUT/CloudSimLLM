@@ -64,8 +64,9 @@ def load(path: Path) -> pd.DataFrame:
 
 
 def fig12_carbon_vs_hour(df: pd.DataFrame, outdir: Path) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
-    for ax, w in zip(axes, WORKLOADS):
+    from plot_utils import panel_label
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.7))
+    for i, (ax, w) in enumerate(zip(axes, WORKLOADS)):
         sub = df[df.workload == w].sort_values("hour")
         for policy in ["LATENCY_GREEDY", "CARBON_AWARE", "BLENDED"]:
             ps = sub[sub.policy == policy]
@@ -74,11 +75,12 @@ def fig12_carbon_vs_hour(df: pd.DataFrame, outdir: Path) -> None:
                     color=POLICY_COLORS[policy], label=policy.replace("_", "\n"),
                     linewidth=1.6)
         ax.set_xlabel("Hour of day (UTC)")
-        ax.set_ylabel("Total carbon (kg CO$_2$eq)")
-        ax.grid(alpha=0.3)
+        if i == 0:
+            ax.set_ylabel("Total carbon (kg CO$_2$eq)")
         ax.set_xticks(range(0, 24, 6))
+        panel_label(ax, i, w)
         if w == WORKLOADS[-1]:
-            ax.legend(loc="upper right", frameon=False, fontsize=7)
+            ax.legend(loc="upper right", frameon=False, fontsize=9)
     fig.tight_layout()
     fig.savefig(outdir / "fig12_carbon_vs_hour.pdf")
     fig.savefig(outdir / "fig12_carbon_vs_hour.png", dpi=200)
@@ -86,8 +88,9 @@ def fig12_carbon_vs_hour(df: pd.DataFrame, outdir: Path) -> None:
 
 
 def fig13_pareto_carbon_latency(df: pd.DataFrame, outdir: Path) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
-    for ax, w in zip(axes, WORKLOADS):
+    from plot_utils import panel_label
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.7))
+    for i, (ax, w) in enumerate(zip(axes, WORKLOADS)):
         sub = df[df.workload == w]
         for policy, marker in zip(["LATENCY_GREEDY", "CARBON_AWARE", "BLENDED"], "ovs"):
             ps = sub[sub.policy == policy]
@@ -96,10 +99,11 @@ def fig13_pareto_carbon_latency(df: pd.DataFrame, outdir: Path) -> None:
                        color=POLICY_COLORS[policy], edgecolor="k", linewidth=0.4,
                        label=policy.replace("_", " "))
         ax.set_xlabel("Total carbon (kg CO$_2$eq)")
-        ax.set_ylabel("P99 TTFT (s)")
-        ax.grid(alpha=0.3)
+        if i == 0:
+            ax.set_ylabel("P99 TTFT (s)")
+        panel_label(ax, i, w)
         if w == WORKLOADS[-1]:
-            ax.legend(loc="upper right", frameon=False, fontsize=8)
+            ax.legend(loc="upper right", frameon=False, fontsize=9)
     fig.tight_layout()
     fig.savefig(outdir / "fig13_pareto_carbon_latency.pdf")
     fig.savefig(outdir / "fig13_pareto_carbon_latency.png", dpi=200)
@@ -126,7 +130,7 @@ def fig14_daily_summary(df: pd.DataFrame, outdir: Path) -> None:
     axes[0].set_xticks(x); axes[0].set_xticklabels(WORKLOADS)
     axes[0].set_ylabel("Mean daily carbon (kg)")
     axes[0].grid(axis="y", alpha=0.3)
-    axes[0].legend(frameon=False, fontsize=8)
+    axes[0].legend(frameon=False, fontsize=9)
 
     # Right: P99 TTFT
     for i, p in enumerate(["LATENCY_GREEDY", "CARBON_AWARE", "BLENDED"]):
@@ -167,11 +171,27 @@ def summary_table(df: pd.DataFrame, outdir: Path) -> pd.DataFrame:
         })
     summary = pd.DataFrame(rows).set_index("workload")
     summary.to_csv(outdir / "table_case_study_3.csv")
-    tex = summary.to_latex(float_format="%.2f")
-    import re
-    tex = re.sub(r"(?<!\\)_", r"\\_", tex)
-    (outdir / "table_case_study_3.tex").write_text(tex)
+    # Compact single-column table (CARBON_AWARE only; BLENDED coincides).
+    # Carbon in grams; TTFT in seconds. 6 narrow columns.
+    lines = [
+        r"\begin{tabular}{l cc c cc}",
+        r"\toprule",
+        r" & \multicolumn{2}{c}{Carbon (g)} & & \multicolumn{2}{c}{P99 TTFT (s)} \\",
+        r"\cmidrule(lr){2-3}\cmidrule(lr){5-6}",
+        r"Workload & Greedy & Aware & Cut & Greedy & Aware \\",
+        r"\midrule",
+    ]
+    for r in rows:
+        lines.append(
+            f"{r['workload']} & {1000*r['greedy_kg']:.0f} & {1000*r['carbon_kg']:.0f} & "
+            f"{r['carbon_savings_pct']:.0f}\\% & {r['greedy_p99_ttft']:.2f} & "
+            f"{r['carbon_p99_ttft']:.2f} \\\\")
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (outdir / "table_case_study_3.tex").write_text("\n".join(lines) + "\n")
     return summary
+
+
+from plot_utils import apply_paper_style
 
 
 def main():
@@ -180,7 +200,8 @@ def main():
     ap.add_argument("--outdir", required=True)
     args = ap.parse_args()
 
-    plt.rcParams.update({
+    apply_paper_style()
+    _ = ({
         "figure.dpi": 110, "savefig.dpi": 300,
         "font.size": 10, "axes.titlesize": 11, "axes.labelsize": 10,
         "legend.fontsize": 9, "xtick.labelsize": 9, "ytick.labelsize": 9,

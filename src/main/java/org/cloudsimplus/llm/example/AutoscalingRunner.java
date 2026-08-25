@@ -119,7 +119,11 @@ public final class AutoscalingRunner {
             var kv = new KvCacheProvisioner(gpu, 16);
             var sched = new ContinuousBatchScheduler(gpu, kv, model)
                 .setMaxBatchSize(64)
-                .setGreedyBatching(false);    // sim clock must advance for autoscaler
+                // Cloudlets are delivered in 5-s arrival buckets; cap the
+                // drain-ahead at that granularity so the internal clock never
+                // races past undelivered work (the AUTOSCALE_TICK events
+                // resume the drain every 2 s).
+                .setMaxDrainAheadSec(5.0);
             vms.add(new VmSimple((double) gpu.getCapacity(), 1L, sched)
                 .setRam(8_000).setBw(1_000).setSize(10_000));
         }
@@ -135,9 +139,10 @@ public final class AutoscalingRunner {
         // metric reflects the regime the operator declares (M3).
         for (var c : trace) ((LlmCloudlet) c).setSloTtft(ttftSlo);
         // Group cloudlets by 5-second arrival buckets and submit each bucket
-        // with a single submissionDelay. This gives the broker manageable
-        // per-bucket events (vs. one per cloudlet) while still exposing the
-        // bursty arrival pattern to the autoscaler over real sim time.
+        // AT its arrival time (not merely with a delivery delay). The
+        // vmMapper then runs when the bucket actually arrives, so cloudlets
+        // landing after a scale-up are routed to the newly warm VMs — the
+        // prerequisite for autoscaling decisions to influence latency.
         Map<Long, List<Cloudlet>> buckets = new HashMap<>();
         for (Cloudlet c : trace) {
             long bucket = (long)(((LlmCloudlet) c).arrivalSimTime() / 5.0);
@@ -146,7 +151,7 @@ public final class AutoscalingRunner {
         var sortedKeys = new ArrayList<>(buckets.keySet());
         sortedKeys.sort(Long::compareTo);
         for (long bucket : sortedKeys) {
-            broker.submitCloudletList(buckets.get(bucket), bucket * 5.0);
+            broker.submitCloudletBucketAt(buckets.get(bucket), bucket * 5.0);
         }
 
         simulation.start();

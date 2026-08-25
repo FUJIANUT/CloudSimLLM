@@ -19,6 +19,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# Per-workload arrival rates chosen so the colocated-8-A100 baseline sits at
+# its SLO knee (~90-95%% attainment at the paper's 1/5/10 s TTFT thresholds):
+# short 150 req/s, medium 40 req/s, long 10 req/s (see §6.2 probes).
+WORKLOAD_RATES = {"short": 150.0, "medium": 40.0, "long": 10.0}
+
+
 
 # Always 8 effective GPUs (rough TFLOPS budget): A100=180 / H100=450 / L40S=220.
 # Mixes are chosen to cover the spectrum from homogeneous high-end to budget-blend.
@@ -98,6 +104,7 @@ def main():
     def to_args(cell):
         return [f"--mix={cell['mix']}", f"--policy={cell['policy']}",
                 f"--requests={cell['requests']}", f"--workload={cell['workload']}",
+                f"--rate={WORKLOAD_RATES[cell['workload']]}",
                 f"--seed={cell['seed']}", f"--label={cell['label']}",
                 f"--output={output}"]
 

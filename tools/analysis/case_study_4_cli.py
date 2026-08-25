@@ -135,10 +135,21 @@ def summary_table(df: pd.DataFrame, outdir: Path) -> pd.DataFrame:
         })
     summary = pd.DataFrame(rows).set_index("policy")
     summary.to_csv(outdir / "table_case_study_4.csv")
-    tex = summary.to_latex(float_format="%.2f")
-    import re
-    tex = re.sub(r"(?<!\\)_", r"\\_", tex)
-    (outdir / "table_case_study_4.tex").write_text(tex)
+    # Compact single-column table with short headers (the verbose pandas
+    # header "cold_start_violations_total" overflowed the column).
+    lines = [
+        r"\begin{tabular}{l rrrr}",
+        r"\toprule",
+        r"Policy & Cost & VM-h & \shortstack{P99\\TTFT} & SLO \\",
+        r"\midrule",
+    ]
+    for r in rows:
+        lines.append(
+            f"{r['policy'].title()} & \\${r['mean_cost']:.2f} & "
+            f"{r['mean_vm_hours']:.2f} & {r['mean_p99_ttft']:.1f}\\,s & "
+            f"{r['mean_slo_pct']:.0f}\\% \\\\")
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (outdir / "table_case_study_4.tex").write_text("\n".join(lines) + "\n")
     return summary
 
 
@@ -174,13 +185,17 @@ def aggregate_seeds(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
     return agg
 
 
+from plot_utils import apply_paper_style
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", required=True)
     ap.add_argument("--outdir", required=True)
     args = ap.parse_args()
 
-    plt.rcParams.update({
+    apply_paper_style()
+    _ = ({
         "figure.dpi": 110, "savefig.dpi": 300,
         "font.size": 10, "axes.titlesize": 11, "axes.labelsize": 10,
         "legend.fontsize": 9, "xtick.labelsize": 9, "ytick.labelsize": 9,

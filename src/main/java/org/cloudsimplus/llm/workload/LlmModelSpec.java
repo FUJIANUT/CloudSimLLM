@@ -44,7 +44,7 @@ public final class LlmModelSpec {
 
     /** Weight bytes M_w = 2 · P_m · b (factor 2 covers fwd activations padding). */
     public long weightBytes() {
-        return 2L * parameters * bytesPerElement;
+        return parameters * bytesPerElement;
     }
 
     public String name()           { return name; }

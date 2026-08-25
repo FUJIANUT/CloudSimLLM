@@ -69,11 +69,12 @@ public final class SplitwiseSweepRunner {
         long seed        = Long.parseLong(args.getOrDefault("seed", "42"));
         String label     = args.getOrDefault("label", "default");
         Path output      = Path.of(args.getOrDefault("output", "results.csv"));
+        double rate      = Double.parseDouble(args.getOrDefault("rate", "50"));
 
         long t0 = System.currentTimeMillis();
         Result r = "colocated".equals(mode)
-            ? runCoLocated(prefillGpus + decodeGpus, numRequests, workload, seed)
-            : runSplitwise(prefillGpus, decodeGpus, numRequests, workload, kvBwGbs, seed);
+            ? runCoLocated(prefillGpus + decodeGpus, numRequests, workload, seed, rate)
+            : runSplitwise(prefillGpus, decodeGpus, numRequests, workload, kvBwGbs, seed, rate);
         long wallMs = System.currentTimeMillis() - t0;
 
         appendCsvRow(output, label, mode, prefillGpus, decodeGpus, numRequests,
@@ -90,7 +91,7 @@ public final class SplitwiseSweepRunner {
 
     /* ---------------------------------------------------------------- */
 
-    private static Result runCoLocated(int totalGpus, int n, String workload, long seed) {
+    private static Result runCoLocated(int totalGpus, int n, String workload, long seed, double rate) {
         // 0.1 ms event granularity: KV transfer delays and decode steps are
         // sub-millisecond, so the default 0.1 s would batch shadow arrivals
         // into the same tick and skip {@code updateCloudletProcessing}.
@@ -111,14 +112,14 @@ public final class SplitwiseSweepRunner {
         }
         new DatacenterSimple(simulation, hosts, new VmAllocationPolicySimple());
         broker.submitVmList(vms);
-        broker.submitCloudletList(generateRequests(model, n, workload, seed));
+        broker.submitCloudletList(generateRequests(model, n, workload, seed, rate));
         simulation.start();
 
         return collect(broker, hosts, /*hasShadows*/ false);
     }
 
     private static Result runSplitwise(int p, int d, int n, String workload,
-                                       double kvBwGbs, long seed) {
+                                       double kvBwGbs, long seed, double rate) {
         // 0.1 ms event granularity: KV transfer delays and decode steps are
         // sub-millisecond, so the default 0.1 s would batch shadow arrivals
         // into the same tick and skip {@code updateCloudletProcessing}.
@@ -157,7 +158,7 @@ public final class SplitwiseSweepRunner {
         allVms.addAll(prefillVms);
         allVms.addAll(decodeVms);
         broker.submitVmList(allVms);
-        broker.submitCloudletList(generateRequests(model, n, workload, seed));
+        broker.submitCloudletList(generateRequests(model, n, workload, seed, rate));
         simulation.start();
 
         return collect(broker, hosts, /*hasShadows*/ true);
@@ -213,7 +214,7 @@ public final class SplitwiseSweepRunner {
             .setAlphaDecodeSec(0.001);
     }
 
-    private static List<Cloudlet> generateRequests(LlmModelSpec model, int n, String workload, long seed) {
+    private static List<Cloudlet> generateRequests(LlmModelSpec model, int n, String workload, long seed, double lambda) {
         var rng = new Random(seed);
         // (minIn, rangeIn, minOut, rangeOut)
         int[] shape = switch (workload) {
@@ -222,13 +223,16 @@ public final class SplitwiseSweepRunner {
             default       -> new int[] { 512, 1537,  256,  385 };  // 512–2048,   256–640 out  (medium)
         };
         var out = new ArrayList<Cloudlet>(n);
-        double lambda = 50.0;       // 50 req/s Poisson arrivals
         double simT = 0.0;
         for (int i = 0; i < n; i++) {
             simT += -Math.log(1 - rng.nextDouble()) / lambda;
             int sIn  = shape[0] + rng.nextInt(shape[1]);
             int sOut = shape[2] + rng.nextInt(shape[3]);
             var c = new LlmCloudlet(i, model, sIn, sOut, LlmCloudlet.SloClass.INTERACTIVE);
+            // Paper thresholds (Azure LLM-trace guidance): TTFT <= 1/5/10 s
+            // for short/medium/long prompt classes.
+            c.setSloTtft(switch (workload) {
+                case "short" -> 1.0; case "long" -> 10.0; default -> 5.0; });
             c.onArrival(simT);
             out.add(c);
         }

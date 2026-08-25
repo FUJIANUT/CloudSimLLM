@@ -33,7 +33,8 @@ public class PrefillDecodeDisaggScheduler extends ContinuousBatchScheduler {
     @Override
     protected double pickNextPhase(List<LlmCloudlet> prefillSet,
                                    List<LlmCloudlet> decodeSet,
-                                   double currentTime) {
+                                   double currentTime,
+                                   double budgetSec) {
         return switch (role) {
             case PREFILL_ONLY -> {
                 if (prefillSet.isEmpty()) yield 0.0;
@@ -46,7 +47,8 @@ public class PrefillDecodeDisaggScheduler extends ContinuousBatchScheduler {
                 }
                 yield dt;
             }
-            case DECODE_ONLY  -> decodeSet.isEmpty()  ? 0.0 : runDecodeStep(decodeSet, currentTime);
+            case DECODE_ONLY  -> decodeSet.isEmpty()  ? 0.0
+                : runDecodeStep(decodeSet, currentTime, budgetSec);
         };
     }
 

@@ -127,7 +127,7 @@ def synthesise_measurements(p: Pair, seed: int = 42, only: str = "all") -> tuple
     """
     rng = np.random.default_rng(seed)
     rows = []
-    mw = 2 * int(p.p_m) * p.bytes_
+    mw = int(p.p_m) * p.bytes_
     kv_per_tok = 2 * p.layers * p.h_kv * p.d_h * p.bytes_
     for sIn in GRID_INPUT:
         for sOut in GRID_OUTPUT:
@@ -200,7 +200,7 @@ def predict_with_calibration(p: Pair, calib: dict, sIn: int, sOut: int, c: int) 
     b_mem = float(calib["b_mem_eff_gbs"])
     a_pre = float(calib.get("alpha_prefill_s", p.alpha_pre))
     a_dec = float(calib.get("alpha_decode_s", p.alpha_dec))
-    mw = 2 * int(p.p_m) * p.bytes_
+    mw = int(p.p_m) * p.bytes_
     kv_per_tok = 2 * p.layers * p.h_kv * p.d_h * p.bytes_
     ttft_one = (2 * p.p_m * sIn) / (f_pre * 1e12) + a_pre
     ttft_p50 = ttft_one * (1 + (c - 1) * 0.6)

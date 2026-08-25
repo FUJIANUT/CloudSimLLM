@@ -82,14 +82,16 @@ public class ContinuousBatchScheduler extends CloudletSchedulerAbstract {
     /** Internal LLM clock — advances as we run batches; never goes backward. */
     private double internalClock = -1.0;
     /**
-     * Greedy batching drains all admitted requests through their phases in a
-     * single {@code updateProcessing} call (best for §6.3/§6.4/§6.5 throughput
-     * studies). Disable for autoscaling experiments (§6.6) where the simulation
-     * clock must advance with the workload so a periodic autoscaler can observe
-     * load growth in real time.
+     * How far (sim-seconds) the internal clock may drain ahead of the last
+     * datacenter event. Infinite for bulk-submitted traces (all future
+     * arrivals visible in the exec list, so the arrival bound is exact).
+     * Runners that deliver cloudlets dynamically (e.g. autoscaling buckets)
+     * should set this to their delivery granularity so the drain never
+     * races past work that has not been delivered yet; periodic broker
+     * events then resume the drain.
      */
-    private boolean greedyBatching = true;
-    public ContinuousBatchScheduler setGreedyBatching(boolean v) { this.greedyBatching = v; return this; }
+    private double maxDrainAheadSec = Double.MAX_VALUE;
+    public ContinuousBatchScheduler setMaxDrainAheadSec(double v) { this.maxDrainAheadSec = v; return this; }
 
     /**
      * <b>Important:</b> we bypass parent's MI-based completion logic (LLM
@@ -116,19 +118,35 @@ public class ContinuousBatchScheduler extends CloudletSchedulerAbstract {
 
         if (internalClock < currentTime) internalClock = currentTime;
         if (Boolean.parseBoolean(System.getenv().getOrDefault("LLM_DEBUG_TICK", "false"))) {
-            System.err.printf("[tick] sim=%.6f intClock=%.6f exec=%d wait=%d greedy=%b%n",
+            System.err.printf("[tick] sim=%.6f intClock=%.6f exec=%d wait=%d%n",
                 currentTime, internalClock, getCloudletExecList().size(),
-                getCloudletWaitingList().size(), greedyBatching);
+                getCloudletWaitingList().size());
         }
 
-        // Drain batches while there is admittable work. In greedy mode, run as
-        // many batches as possible per call (fastest sim runtime). In
-        // non-greedy mode, run exactly ONE batch per call so the simulation
-        // clock advances with the workload (required for §6.6 autoscaling).
-        final int safety = greedyBatching ? 100_000 : 1;
+        // Arrival-bounded greedy drain: process admittable work forward in
+        // (internal) time, but never advance past the next future arrival in
+        // the exec list without first admitting it. This gives vLLM-style
+        // continuous-batching semantics (new requests join the running batch
+        // at their exact arrival time) while remaining event-driven: every
+        // arrival among bulk-submitted cloudlets is an internal idle-jump
+        // target, and dynamically delivered cloudlets re-trigger this method
+        // via their own datacenter events. Decode jumps are budget-bounded by
+        // the next arrival (see runDecodeStep), so no request can starve
+        // inside a long non-preemptible jump.
+        final double drainLimit = maxDrainAheadSec == Double.MAX_VALUE
+            ? Double.MAX_VALUE : currentTime + maxDrainAheadSec;
+        final int safety = 1_000_000;
         for (int iter = 0; iter < safety; iter++) {
+            if (internalClock >= drainLimit) break;   // resume at next event
             final List<LlmCloudlet> arrived = arrivedCloudlets(internalClock);
-            if (arrived.isEmpty()) break;
+            if (arrived.isEmpty()) {
+                // Nothing admittable *now* — idle-jump to the next future
+                // arrival already present in the exec list, if any.
+                final double nextArr = nextFutureArrival(internalClock);
+                if (nextArr == Double.MAX_VALUE || nextArr > drainLimit) break;
+                internalClock = nextArr;
+                continue;
+            }
 
             // KV admission per request (best-effort, idempotent for already-admitted).
             for (LlmCloudlet r : arrived) {
@@ -145,7 +163,10 @@ public class ContinuousBatchScheduler extends CloudletSchedulerAbstract {
                 if (r.phase() == LlmCloudlet.Phase.WAITING || r.phase() == LlmCloudlet.Phase.PREFILL) prefillSet.add(r);
                 else if (r.phase() == LlmCloudlet.Phase.DECODE) decodeSet.add(r);
             }
-            double dt = pickNextPhase(prefillSet, decodeSet, internalClock);
+            final double nextArr = Math.min(nextFutureArrival(internalClock), drainLimit);
+            final double budget = nextArr == Double.MAX_VALUE
+                ? Double.MAX_VALUE : Math.max(0.0, nextArr - internalClock);
+            double dt = pickNextPhase(prefillSet, decodeSet, internalClock, budget);
             if (dt <= 0) break;
             internalClock += dt;
             finalizeDoneRequests();
@@ -165,6 +186,14 @@ public class ContinuousBatchScheduler extends CloudletSchedulerAbstract {
             return Math.min(internalClock, nextArrival);
         }
         return nextArrival == Double.MAX_VALUE ? currentTime + 1e-6 : nextArrival;
+    }
+
+    /** Earliest arrival strictly after {@code now} among exec-list cloudlets. */
+    private double nextFutureArrival(double now) {
+        return activeLlmCloudlets().stream()
+            .mapToDouble(LlmCloudlet::arrivalSimTime)
+            .filter(t -> t > now)
+            .min().orElse(Double.MAX_VALUE);
     }
 
     /** Cloudlets in execList whose Poisson arrival time has elapsed. */
@@ -198,16 +227,19 @@ public class ContinuousBatchScheduler extends CloudletSchedulerAbstract {
     /**
      * Decides which phase to run this tick and returns the elapsed time. Default
      * implementation: run prefill if any are pending (Eq. 1); otherwise advance
-     * decode by one step (Eq. 2). Override for Splitwise-style splitting.
+     * decode (Eq. 2) for at most {@code budgetSec} of wall-clock so the next
+     * arriving request can join the batch on time. Override for
+     * Splitwise-style splitting.
      */
     protected double pickNextPhase(List<LlmCloudlet> prefillSet,
                                    List<LlmCloudlet> decodeSet,
-                                   double currentTime) {
+                                   double currentTime,
+                                   double budgetSec) {
         if (!prefillSet.isEmpty() && policy != BatchPolicy.FIRST_COME_FIRST_SERVED) {
             return runPrefillBatch(prefillSet, currentTime);
         }
         if (!decodeSet.isEmpty()) {
-            return runDecodeStep(decodeSet, currentTime);
+            return runDecodeStep(decodeSet, currentTime, budgetSec);
         }
         if (!prefillSet.isEmpty()) {
             return runPrefillBatch(prefillSet, currentTime);
@@ -242,6 +274,16 @@ public class ContinuousBatchScheduler extends CloudletSchedulerAbstract {
      * a time, which fights CloudSim's default {@code minTimeBetweenEvents}.</p>
      */
     protected double runDecodeStep(List<LlmCloudlet> batch, double now) {
+        return runDecodeStep(batch, now, Double.MAX_VALUE);
+    }
+
+    /**
+     * Budget-bounded variant: advances at most
+     * {@code max(1, floor(budgetSec / tStep))} steps so a request arriving at
+     * {@code now + budgetSec} is admitted into the very next batch rather than
+     * waiting out a long non-preemptible jump.
+     */
+    protected double runDecodeStep(List<LlmCloudlet> batch, double now, double budgetSec) {
         if (batch.isEmpty()) return 0.0;
 
         final double flopsBound = (2.0 * model.parameters() * batch.size())
@@ -254,6 +296,10 @@ public class ContinuousBatchScheduler extends CloudletSchedulerAbstract {
         int kSteps = batch.stream()
             .mapToInt(r -> Math.max(1, r.outputTokens() - r.generated()))
             .min().orElse(1);
+        if (budgetSec != Double.MAX_VALUE) {
+            final int kBudget = Math.max(1, (int) Math.floor(budgetSec / tStep));
+            kSteps = Math.min(kSteps, kBudget);
+        }
 
         for (LlmCloudlet r : batch) {
             int actualK = Math.min(kSteps, r.outputTokens() - r.generated());

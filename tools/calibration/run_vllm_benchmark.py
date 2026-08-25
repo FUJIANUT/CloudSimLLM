@@ -63,6 +63,11 @@ async def one_request(client, model, prompt_tokens, max_tokens):
         messages=[{"role": "user", "content": prompt}],
         max_tokens=max_tokens,
         stream=True,
+        # Force exactly max_tokens output tokens so the measured cell matches
+        # the nominal (input, output) grid point; without this the model stops
+        # at EOS after a handful of tokens on synthetic prompts and TPOT /
+        # throughput no longer correspond to the nominal operating point.
+        extra_body={"ignore_eos": True},
     )
     async for chunk in stream:
         delta = chunk.choices[0].delta.content if chunk.choices else None

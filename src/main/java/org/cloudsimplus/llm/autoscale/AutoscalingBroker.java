@@ -48,9 +48,14 @@ public class AutoscalingBroker extends DatacenterBrokerSimple {
 
     /** Custom event tag for the periodic autoscaler tick. */
     private static final int AUTOSCALE_TICK = CloudSimTag.NONE - 9999;
+    /** Custom event tag for arrival-time bucket submission. */
+    private static final int SUBMIT_BUCKET = CloudSimTag.NONE - 9998;
     /** How often we poll the autoscaler (sim seconds). */
     private double tickIntervalSec = 2.0;
     private boolean tickerStarted = false;
+    /** Buckets registered before simulation start, flushed in startInternal. */
+    private final List<Object[]> pendingBuckets = new ArrayList<>();
+    private int bucketsOutstanding = 0;
 
     public AutoscalingBroker(CloudSimPlus simulation, WarmPoolAutoscaler autoscaler) {
         super(simulation);
@@ -68,17 +73,49 @@ public class AutoscalingBroker extends DatacenterBrokerSimple {
             schedule(tickIntervalSec, AUTOSCALE_TICK);
             tickerStarted = true;
         }
+        // Flush buckets registered before simulation start: each bucket is
+        // delivered (and therefore VM-mapped) at its arrival time, so scaling
+        // decisions made before that time genuinely change request routing.
+        for (Object[] entry : pendingBuckets) {
+            schedule((Double) entry[0], SUBMIT_BUCKET, entry[1]);
+        }
+        pendingBuckets.clear();
+    }
+
+    /**
+     * Register a bucket of cloudlets to be submitted (and VM-mapped) at
+     * {@code atTime} sim seconds. Unlike {@code submitCloudletList(list,
+     * delay)} — which maps every cloudlet to a VM immediately at t=0 and only
+     * delays datacenter delivery — this defers the {@code vmMapper} call
+     * itself, so cloudlets arriving after a scale-up are actually routed to
+     * the newly warmed VMs. This is the mechanism that lets autoscaling
+     * decisions affect request latency.
+     */
+    public AutoscalingBroker submitCloudletBucketAt(List<? extends Cloudlet> bucket, double atTime) {
+        bucketsOutstanding++;
+        if (isStarted()) {
+            schedule(Math.max(0, atTime - getSimulation().clock()), SUBMIT_BUCKET, bucket);
+        } else {
+            pendingBuckets.add(new Object[]{ atTime, bucket });
+        }
+        return this;
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public void processEvent(final SimEvent evt) {
         if (evt.getTag() == AUTOSCALE_TICK) {
             onProgressTick();
             // Only reschedule if work is still pending; otherwise let sim end.
             int finished = getCloudletFinishedList().size();
-            if (finished < getCloudletSubmittedList().size() || finished == 0) {
+            if (bucketsOutstanding > 0 || finished < getCloudletSubmittedList().size() || finished == 0) {
                 schedule(tickIntervalSec, AUTOSCALE_TICK);
             }
+            return;
+        }
+        if (evt.getTag() == SUBMIT_BUCKET) {
+            bucketsOutstanding--;
+            submitCloudletList((List<Cloudlet>) evt.getData());
             return;
         }
         super.processEvent(evt);

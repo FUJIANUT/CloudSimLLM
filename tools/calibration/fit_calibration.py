@@ -134,7 +134,7 @@ def main():
     hw = json.load(open(args.hw_config))
 
     p_m = float(model["parameters"])
-    mw = 2 * int(p_m) * int(model["bytes"])
+    mw = int(p_m) * int(model["bytes"])
     kv_per_tok = kv_bytes_per_token(model)
 
     f_eff_pre, alpha_pre = fit_prefill(meas, p_m)

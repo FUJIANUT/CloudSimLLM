@@ -15,6 +15,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# 12 GPUs across 3 regions; LATENCY_GREEDY splits load 3 ways onto 4-GPU
+# regions, so per-GPU utilisation parity with the 8-GPU §6.3 baseline means
+# 1.5x the §6.3 per-workload rates.
+WORKLOAD_RATES = {"short": 90.0, "medium": 24.0, "long": 6.0}
+
+
 POLICIES_DEFAULT  = ["LATENCY_GREEDY", "CARBON_AWARE", "BLENDED"]
 HOURS_DEFAULT     = list(range(0, 24, 3))           # 0, 3, 6, …, 21
 WORKLOADS_DEFAULT = ["short", "medium", "long"]
@@ -87,6 +93,7 @@ def main():
     def to_args(cell):
         a = [f"--policy={cell['policy']}", f"--hour={cell['hour']}",
              f"--requests={cell['requests']}", f"--workload={cell['workload']}",
+             f"--rate={WORKLOAD_RATES[cell['workload']]}",
              f"--seed={cell['seed']}", f"--lambda={cell['lambda']}",
              f"--label={cell['label']}", f"--output={output}"]
         if args.carbon_csv:

@@ -89,20 +89,53 @@ def load(path: Path) -> pd.DataFrame:
     return aggregate_seeds(df, ["mix", "policy", "workload"])
 
 
+def _pareto_frontier(sub):
+    """Return the subset of rows on the lower-left (min cost, min TTFT)
+    Pareto frontier of (cost_per_hour, p99_ttft_s)."""
+    pts = sub.sort_values("cost_per_hour")
+    frontier, best = [], float("inf")
+    for _, r in pts.iterrows():
+        if r.p99_ttft_s < best - 1e-9:
+            frontier.append(r["mix"]); best = r.p99_ttft_s
+    return set(frontier)
+
+
 def fig9_ttft_vs_cost(df: pd.DataFrame, outdir: Path) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
-    for ax, w in zip(axes, WORKLOADS):
+    from plot_utils import panel_label
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.7))
+    for i, (ax, w) in enumerate(zip(axes, WORKLOADS)):
         sub = df[(df.workload == w) & (df.policy == "FREE_HBM")]
         if sub.empty: continue
+        frontier = _pareto_frontier(sub)
+        # Draw the Pareto frontier as a connecting step line.
+        fpts = sub[sub.mix.isin(frontier)].sort_values("cost_per_hour")
+        ax.plot(fpts.cost_per_hour, fpts.p99_ttft_s, color="#d95f02",
+                lw=1.3, ls="--", zorder=1, alpha=0.7)
         for _, r in sub.iterrows():
-            ax.scatter(r.cost_per_hour, r.p99_ttft_s, s=100, edgecolor="k",
-                       linewidth=0.5, color="steelblue")
-            ax.annotate(r.mix.replace("_", "\n"),
-                        (r.cost_per_hour, r.p99_ttft_s),
-                        fontsize=7, xytext=(5, 4), textcoords="offset points")
-        ax.set_xlabel("Cluster cost ($/hour)")
-        ax.set_ylabel("P99 TTFT (s)")
-        ax.grid(alpha=0.3)
+            on = r["mix"] in frontier
+            ax.scatter(r.cost_per_hour, r.p99_ttft_s,
+                       s=170 if on else 90,
+                       color="#d95f02" if on else "#9ecae1",
+                       marker="D" if on else "o",
+                       edgecolor="k", linewidth=0.6, zorder=3 if on else 2)
+            # Only label frontier points + the two homogeneous extremes to
+            # de-clutter; others are visually obvious.
+            if on or r["mix"] in ("h100x8", "l40sx8", "a100x8"):
+                ax.annotate(r.mix.replace("_", "\n"),
+                            (r.cost_per_hour, r.p99_ttft_s),
+                            fontsize=9, xytext=(6, 5), textcoords="offset points",
+                            fontweight="bold" if on else "normal")
+        ax.set_xlabel("Cluster cost (\\$/hour)")
+        if i == 0:
+            ax.set_ylabel("P99 TTFT (s)")
+        panel_label(ax, i, w)
+    # single shared legend for the frontier encoding
+    from matplotlib.lines import Line2D
+    handles = [Line2D([0], [0], marker="D", color="w", markerfacecolor="#d95f02",
+                      markeredgecolor="k", markersize=10, label="on Pareto frontier"),
+               Line2D([0], [0], marker="o", color="w", markerfacecolor="#9ecae1",
+                      markeredgecolor="k", markersize=8, label="dominated")]
+    axes[-1].legend(handles=handles, loc="upper right", fontsize=9)
     fig.tight_layout()
     fig.savefig(outdir / "fig9_ttft_vs_cost.pdf")
     fig.savefig(outdir / "fig9_ttft_vs_cost.png", dpi=200)
@@ -110,20 +143,22 @@ def fig9_ttft_vs_cost(df: pd.DataFrame, outdir: Path) -> None:
 
 
 def fig10_energy_pareto(df: pd.DataFrame, outdir: Path) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
-    for ax, w in zip(axes, WORKLOADS):
+    from plot_utils import panel_label
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.7))
+    for i, (ax, w) in enumerate(zip(axes, WORKLOADS)):
         sub = df[(df.workload == w) & (df.policy == "FREE_HBM")]
         if sub.empty: continue
         sc = ax.scatter(sub.total_energy_kwh, sub.mean_e2e_s, c=sub.cost_per_hour,
-                        cmap="viridis", s=100, edgecolor="k", linewidth=0.5)
+                        cmap="viridis", s=150, edgecolor="k", linewidth=0.6)
         for _, r in sub.iterrows():
             ax.annotate(r.mix, (r.total_energy_kwh, r.mean_e2e_s),
-                        fontsize=7, xytext=(5, 4), textcoords="offset points")
+                        fontsize=8.5, xytext=(6, 5), textcoords="offset points")
         ax.set_xlabel("Total energy (kWh)")
-        ax.set_ylabel("Mean E2E latency (s)")
-        ax.grid(alpha=0.3)
+        if i == 0:
+            ax.set_ylabel("Mean E2E latency (s)")
+        panel_label(ax, i, w)
         if w == WORKLOADS[-1]:
-            plt.colorbar(sc, ax=ax, fraction=0.045, label="$/hour")
+            plt.colorbar(sc, ax=ax, fraction=0.045, label="cluster \\$/hour")
     fig.tight_layout()
     fig.savefig(outdir / "fig10_energy_pareto.pdf")
     fig.savefig(outdir / "fig10_energy_pareto.png", dpi=200)
@@ -141,7 +176,7 @@ def fig11_mix_robustness(df: pd.DataFrame, outdir: Path) -> None:
         vals = [sub[(sub.mix == m) & (sub.workload == w)].p99_ttft_s.iloc[0]
                 if not sub[(sub.mix == m) & (sub.workload == w)].empty else 0.0
                 for m in mixes]
-        errs = [sub[(sub.mix == m) & (sub.workload == w)].p99_ttft_s_std.iloc[0]
+        errs = [sub[(sub.mix == m) & (sub.workload == w)].p99_ttft_s_ci.iloc[0]
                 if not sub[(sub.mix == m) & (sub.workload == w)].empty else 0.0
                 for m in mixes]
         ax.bar(x + i*width - width, vals, width=width, label=w,
@@ -150,7 +185,8 @@ def fig11_mix_robustness(df: pd.DataFrame, outdir: Path) -> None:
                error_kw=dict(ecolor='black', lw=0.6))
     ax.set_xticks(x)
     ax.set_xticklabels(mixes, rotation=18, ha="right", fontsize=8)
-    ax.set_ylabel("P99 TTFT (s)  [mean $\\pm$ std, 5 seeds]")
+    n = int(df.n_seeds.iloc[0]) if "n_seeds" in df else 20
+    ax.set_ylabel(f"P99 TTFT (s)  [mean, 95% CI, {n} seeds]")
     ax.set_yscale("log")
     ax.grid(axis="y", alpha=0.3, which="both")
     ax.legend(frameon=False)
@@ -201,13 +237,17 @@ def policy_robustness(df: pd.DataFrame, outdir: Path) -> pd.DataFrame:
     return pivot
 
 
+from plot_utils import apply_paper_style
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", required=True)
     ap.add_argument("--outdir", required=True)
     args = ap.parse_args()
 
-    plt.rcParams.update({
+    apply_paper_style()
+    _ = ({
         "figure.dpi": 110, "savefig.dpi": 300,
         "font.size": 10, "axes.titlesize": 11, "axes.labelsize": 10,
         "legend.fontsize": 9, "xtick.labelsize": 9, "ytick.labelsize": 9,

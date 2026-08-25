@@ -28,6 +28,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# Per-workload arrival rates chosen so the colocated-8-A100 baseline sits at
+# its SLO knee (~90-95%% attainment at the paper's 1/5/10 s TTFT thresholds):
+# short 150 req/s, medium 40 req/s, long 10 req/s (see §6.2 probes).
+WORKLOAD_RATES = {"short": 150.0, "medium": 40.0, "long": 10.0}
+
+
 
 # (prefill_gpus, decode_gpus) — keep total fixed at TOTAL_GPUS in main()
 PD_RATIOS_DEFAULT = [(1, 7), (2, 6), (3, 5), (4, 4), (5, 3), (6, 2)]
@@ -139,6 +145,7 @@ def main():
             f"--requests={cell['requests']}",
             f"--workload={cell['workload']}",
             f"--kv-bw-gbs={cell['kv_bw_gbs']}",
+            f"--rate={WORKLOAD_RATES[cell['workload']]}",
             f"--seed={cell['seed']}",
             f"--label={cell['label']}",
             f"--output={output}",

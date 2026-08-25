@@ -1,0 +1,8 @@
+{
+  "sku": "RTX-4090-Laptop-16GB",
+  "peak_tflops": 180.0,
+  "peak_hbm_gbs": 576.0,
+  "hbm_gb": 16,
+  "tdp_w": 150.0,
+  "idle_w": 20.0
+}

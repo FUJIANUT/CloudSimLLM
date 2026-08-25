@@ -62,11 +62,12 @@ public final class HeterogeneousMixRunner {
         long seed        = Long.parseLong(args.getOrDefault("seed", "42"));
         String label     = args.getOrDefault("label", "default");
         Path output      = Path.of(args.getOrDefault("output", "het_results.csv"));
+        double rate      = Double.parseDouble(args.getOrDefault("rate", "50"));
 
         var policy = LlmVmAllocationPolicy.RankBy.valueOf(policyStr);
 
         long t0 = System.currentTimeMillis();
-        Result r = run(mix, policy, numRequests, workload, seed);
+        Result r = run(mix, policy, numRequests, workload, seed, rate);
         long wallMs = System.currentTimeMillis() - t0;
 
         appendCsvRow(output, label, mix, policyStr, numRequests, workload, seed, wallMs, r);
@@ -97,7 +98,7 @@ public final class HeterogeneousMixRunner {
     }
 
     private static Result run(String mix, LlmVmAllocationPolicy.RankBy policy,
-                               int n, String workload, long seed) {
+                               int n, String workload, long seed, double rate) {
         var simulation = new CloudSimPlus(0.0001);
         var broker = new DatacenterBrokerSimple(simulation);
         var model = LlmModelSpec.llama3_8B_fp16();
@@ -121,7 +122,7 @@ public final class HeterogeneousMixRunner {
         new DatacenterSimple(simulation, hosts, alloc);
 
         broker.submitVmList(vms);
-        broker.submitCloudletList(generateRequests(model, n, workload, seed));
+        broker.submitCloudletList(generateRequests(model, n, workload, seed, rate));
         simulation.start();
 
         return collect(broker, hosts);
@@ -165,7 +166,7 @@ public final class HeterogeneousMixRunner {
             .setEffHbmBwGbs(650.0).setAlphaPrefillSec(0.006).setAlphaDecodeSec(0.0015);
     }
 
-    private static List<Cloudlet> generateRequests(LlmModelSpec model, int n, String workload, long seed) {
+    private static List<Cloudlet> generateRequests(LlmModelSpec model, int n, String workload, long seed, double rate) {
         var rng = new Random(seed);
         int[] shape = switch (workload) {
             case "short"  -> new int[] { 128,  385,   64,  129 };
@@ -175,10 +176,14 @@ public final class HeterogeneousMixRunner {
         var out = new ArrayList<Cloudlet>(n);
         double simT = 0.0;
         for (int i = 0; i < n; i++) {
-            simT += -Math.log(1 - rng.nextDouble()) / 50.0;
+            simT += -Math.log(1 - rng.nextDouble()) / rate;
             int sIn  = shape[0] + rng.nextInt(shape[1]);
             int sOut = shape[2] + rng.nextInt(shape[3]);
             var c = new LlmCloudlet(i, model, sIn, sOut, LlmCloudlet.SloClass.INTERACTIVE);
+            // Paper thresholds (Azure LLM-trace guidance): TTFT <= 1/5/10 s
+            // for short/medium/long prompt classes.
+            c.setSloTtft(switch (workload) {
+                case "short" -> 1.0; case "long" -> 10.0; default -> 5.0; });
             c.onArrival(simT);
             out.add(c);
         }

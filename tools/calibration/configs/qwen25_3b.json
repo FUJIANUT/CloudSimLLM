@@ -1,0 +1,9 @@
+{
+  "name": "qwen2.5-vl-3b-instruct-lm",
+  "parameters": 3090000000,
+  "layers": 36,
+  "h_q": 16,
+  "h_kv": 2,
+  "d_h": 128,
+  "bytes": 2
+}

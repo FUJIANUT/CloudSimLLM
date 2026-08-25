@@ -66,11 +66,12 @@ public final class GeoDistributedRunner {
         String label     = args.getOrDefault("label", "default");
         Path output      = Path.of(args.getOrDefault("output", "geo_results.csv"));
         String carbonCsv = args.get("carbon-csv");   // optional
+        double rate      = Double.parseDouble(args.getOrDefault("rate", "50"));
 
         var policy = CarbonAwareBroker.Policy.valueOf(policyStr);
 
         long t0 = System.currentTimeMillis();
-        Result r = run(policy, hour, numRequests, workload, seed, lambda, carbonCsv);
+        Result r = run(policy, hour, numRequests, workload, seed, lambda, carbonCsv, rate);
         long wallMs = System.currentTimeMillis() - t0;
 
         appendCsvRow(output, label, policyStr, hour, numRequests, workload, seed, lambda, wallMs, r);
@@ -83,7 +84,7 @@ public final class GeoDistributedRunner {
 
     private static Result run(CarbonAwareBroker.Policy policy, int hour, int n,
                               String workload, long seed, double lambda,
-                              String carbonCsv) {
+                              String carbonCsv, double rate) {
         var simulation = new CloudSimPlus(0.0001);
         var broker = new CarbonAwareBroker(simulation, seed)
             .setPolicy(policy)
@@ -133,7 +134,7 @@ public final class GeoDistributedRunner {
 
         // Submit cloudlets, with arrival timestamps offset by `hour`*3600 so the
         // carbon profile is sampled at the right phase of the daily cycle.
-        var cloudlets = generateRequests(model, n, workload, seed, hour);
+        var cloudlets = generateRequests(model, n, workload, seed, hour, rate);
         for (Cloudlet c : cloudlets) {
             if (c instanceof LlmCloudlet llm) broker.assignHome(llm);
         }
@@ -187,7 +188,7 @@ public final class GeoDistributedRunner {
     }
 
     private static List<Cloudlet> generateRequests(LlmModelSpec model, int n, String workload,
-                                                    long seed, int hour) {
+                                                    long seed, int hour, double rate) {
         var rng = new Random(seed);
         int[] shape = switch (workload) {
             case "short"  -> new int[] { 128,  385,   64,  129 };
@@ -199,10 +200,13 @@ public final class GeoDistributedRunner {
         // the carbon profile phase offset on each region (see run() above).
         double simT = 0.0;
         for (int i = 0; i < n; i++) {
-            simT += -Math.log(1 - rng.nextDouble()) / 50.0;
+            simT += -Math.log(1 - rng.nextDouble()) / rate;
             int sIn  = shape[0] + rng.nextInt(shape[1]);
             int sOut = shape[2] + rng.nextInt(shape[3]);
             var c = new LlmCloudlet(i, model, sIn, sOut, LlmCloudlet.SloClass.INTERACTIVE);
+            // Paper thresholds (Azure LLM-trace guidance): TTFT <= 1/5/10 s.
+            c.setSloTtft(switch (workload) {
+                case "short" -> 1.0; case "long" -> 10.0; default -> 5.0; });
             c.onArrival(simT);
             out.add(c);
         }

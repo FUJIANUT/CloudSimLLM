@@ -95,9 +95,10 @@ def fig6_ttft_vs_pd(df: pd.DataFrame, outdir: Path) -> None:
 
 
 def fig7_pareto(df: pd.DataFrame, outdir: Path) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+    from plot_utils import panel_label
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.7))
     last_sc = None
-    for ax, w in zip(axes, WORKLOADS):
+    for i, (ax, w) in enumerate(zip(axes, WORKLOADS)):
         view = df[(df.workload == w) & (df.kv_bw_gbs == 200)]
         sw = view[view["mode"] == "splitwise"].sort_values("pd_share_prefill")
         co = view[view["mode"] == "colocated"]
@@ -111,10 +112,11 @@ def fig7_pareto(df: pd.DataFrame, outdir: Path) -> None:
         for _, r in sw.iterrows():
             ax.annotate(f"{int(r.prefill_gpus)}p{int(r.decode_gpus)}d",
                         (r.mean_e2e_s, 100*r.slo_attainment),
-                        fontsize=7, xytext=(4, 4), textcoords="offset points")
+                        fontsize=9.5, xytext=(6, 5), textcoords="offset points")
         ax.set_xlabel("Mean E2E latency (s)")
-        ax.set_ylabel("SLO attainment (%)")
-        ax.grid(alpha=0.3)
+        if i == 0:
+            ax.set_ylabel("SLO attainment (%)")
+        panel_label(ax, i, w)
         if w == WORKLOADS[-1] and not co.empty:
             ax.legend(loc="lower right", frameon=False)
     if last_sc is not None:
@@ -156,28 +158,51 @@ def fig8_kvbw_sensitivity(df: pd.DataFrame, outdir: Path) -> None:
 
 
 def summary_table(df: pd.DataFrame, outdir: Path) -> pd.DataFrame:
+    """Best splitwise (by TTFT) vs colocated, per workload. We report BOTH
+    P99 TTFT and mean E2E: the TTFT-minimising split (prefill-heavy) has the
+    lowest TTFT but starves decode, so its E2E blows up — this is exactly the
+    fixed-partition decode bottleneck the case study is about."""
     rows = []
     for w in WORKLOADS:
         co = df[(df.workload == w) & (df["mode"] == "colocated")]
         sw = df[(df.workload == w) & (df["mode"] == "splitwise") & (df.kv_bw_gbs == 200)]
         if co.empty or sw.empty: continue
-        best = sw.loc[sw.p99_ttft_s.idxmin()]
-        co_p99 = co.p99_ttft_s.iloc[0]
-        co_ci  = co.p99_ttft_s_ci.iloc[0]
+        best = sw.loc[sw.p99_ttft_s.idxmin()]            # TTFT-optimal split
+        best_e2e = sw.loc[sw.mean_e2e_s.idxmin()]        # E2E-optimal split
+        co_p99 = co.p99_ttft_s.iloc[0]; co_ci = co.p99_ttft_s_ci.iloc[0]
         rows.append({
-            "workload": w, "best_pd": best.pd_ratio,
+            "workload": w,
             "colo_p99_ttft": f"{co_p99:.2f} [±{co_ci:.2f}]",
-            "sw_p99_ttft":   f"{best.p99_ttft_s:.2f} [±{best.p99_ttft_s_ci:.2f}]",
-            "speedup": f"{co_p99/best.p99_ttft_s:.2f}",
-            "colo_slo": f"{100*co.slo_attainment.iloc[0]:.1f}",
-            "sw_slo":   f"{100*best.slo_attainment:.1f} [±{100*best.slo_attainment_ci:.1f}]",
+            "colo_e2e":      f"{co.mean_e2e_s.iloc[0]:.1f}",
+            "sw_bestTTFT_pd": best.pd_ratio,
+            "sw_p99_ttft":    f"{best.p99_ttft_s:.2f}",
+            "sw_bestTTFT_e2e": f"{best.mean_e2e_s:.0f}",
+            "sw_bestE2E_pd":  best_e2e.pd_ratio,
+            "sw_bestE2E_e2e": f"{best_e2e.mean_e2e_s:.0f}",
+            "ttft_ratio":     f"{best.p99_ttft_s/co_p99:.2f}x",
         })
     summary = pd.DataFrame(rows).set_index("workload")
     summary.to_csv(outdir / "table_case_study_1.csv")
-    tex = summary.to_latex()
-    import re
-    tex = re.sub(r"(?<!\\)_", r"\\_", tex)
-    (outdir / "table_case_study_1.tex").write_text(tex)
+    # Hand-written compact single-column tabular (5 narrow columns) — the
+    # default 9-column to_latex() overflows the elsarticle column.
+    # bestTTFT split is prefill-heavy (6:2), bestE2E split is decode-heavy
+    # (1:7); co-location wins on BOTH axes.
+    lines = [
+        r"\begin{tabular}{l cc cc}",
+        r"\toprule",
+        r" & \multicolumn{2}{c}{Co-located} & \multicolumn{2}{c}{Best Splitwise} \\",
+        r"\cmidrule(lr){2-3}\cmidrule(lr){4-5}",
+        r"Workload & TTFT & E2E & TTFT & E2E \\",
+        r"\midrule",
+    ]
+    for r in rows:
+        # co TTFT (strip the CI for compactness), co E2E, sw-bestTTFT TTFT, sw-bestE2E E2E
+        co_ttft = r["colo_p99_ttft"].split(" [")[0]
+        lines.append(
+            f"{r['workload']} & {co_ttft} & {r['colo_e2e']} & "
+            f"{r['sw_p99_ttft']} & {r['sw_bestE2E_e2e']} \\\\")
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (outdir / "table_case_study_1.tex").write_text("\n".join(lines) + "\n")
     return summary
 
 
@@ -192,13 +217,17 @@ def sanity_checks(df: pd.DataFrame) -> list[str]:
     return issues
 
 
+from plot_utils import apply_paper_style
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", required=True)
     ap.add_argument("--outdir", required=True)
     args = ap.parse_args()
 
-    plt.rcParams.update({
+    apply_paper_style()
+    _ = ({
         "figure.dpi": 110, "savefig.dpi": 300,
         "font.size": 10, "axes.titlesize": 11, "axes.labelsize": 10,
         "legend.fontsize": 9, "xtick.labelsize": 9, "ytick.labelsize": 9,

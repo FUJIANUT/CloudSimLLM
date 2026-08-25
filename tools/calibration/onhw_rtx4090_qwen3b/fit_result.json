@@ -1,0 +1,13 @@
+{
+  "pair": "RTX-4090-laptop / Qwen2.5-3B (power-capped)",
+  "f_eff_prefill_tflops": 1000.0,
+  "alpha_prefill_s": 0.3652,
+  "b_mem_eff_gbs": 23.87,
+  "alpha_decode_s": 0.1222,
+  "n_calib": 8,
+  "n_holdout": 10,
+  "id_ttft_err_pct": 24.6,
+  "id_tpot_err_pct": 1.9,
+  "ho_ttft_err_pct": 17.4,
+  "ho_tpot_err_pct": 7.5
+}
