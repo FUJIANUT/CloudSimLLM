@@ -132,10 +132,14 @@ The rest of the tree is upstream CloudSim Plus (unmodified). The original upstre
 ## Status
 
 - ✅ Java extension + Python toolchain released (this branch).
-- ✅ 5-seed sweeps (990 cells) reproducible end-to-end on a laptop.
-- ✅ Calibration toolchain works; current release uses literature-derived ground truth.
-- ⏳ Direct on-hardware vLLM calibration (A100 / H100 / L40S) is the next validation step.
+- ✅ 20-seed sweeps (198 configurations, ≈5,000 seed-cells across five case studies) reproducible end-to-end on a laptop.
+- ✅ Arrival-bounded continuous-batching engine, cross-validated against Vidur (MLSys'24) on shared traces.
+- ✅ Calibration toolchain works; literature-derived ground truth plus a real on-hardware RTX 4090 / Qwen2.5-3B vLLM dataset with held-out validation (`tools/calibration/onhw_rtx4090_qwen3b/`).
+- ⏳ Direct on-hardware vLLM calibration on datacenter GPUs (A100 / H100 / L40S) is the next validation step.
 - ⏳ Comparison against production autoscalers (Kubernetes HPA, KEDA, SageServe) is future work.
+
+**Revision snapshot (FGCS-D-26-02263):** the code and data evaluated in the
+revised manuscript correspond to commit `7c5446b4e`.
 
 ## Citing
 
